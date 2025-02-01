@@ -7,8 +7,13 @@ use anyhow::Error;
 use clap::Parser;
 use tracing_subscriber::{fmt, EnvFilter};
 use xsd_parser::{
-    config::{GenerateFlags, InterpreterFlags, OptimizerFlags, ParserFlags, Resolver, Schema},
-    generate, Config,
+    config::{
+        ContentMode, Generate, GenerateFlags, InterpreterFlags, OptimizerFlags, ParserFlags,
+        Resolver, Schema,
+    },
+    exec_generator, exec_interpreter, exec_optimizer, exec_parser,
+    types::{IdentType, Type},
+    Config,
 };
 
 fn main() -> Result<(), Error> {
@@ -37,8 +42,13 @@ fn main() -> Result<(), Error> {
     config.parser.flags = ParserFlags::all();
     config.parser.schemas = inputs.into_iter().map(Schema::File).collect();
     config.interpreter.flags = InterpreterFlags::all();
-    config.optimizer.flags = OptimizerFlags::all() - OptimizerFlags::REMOVE_DUPLICATES;
-    config.generator.flags = GenerateFlags::all();
+    config.optimizer.flags = OptimizerFlags::all()
+        - OptimizerFlags::REMOVE_DUPLICATES
+        - OptimizerFlags::CONVERT_DYNAMIC_TO_CHOICE
+        - OptimizerFlags::FLATTEN_ELEMENT_CONTENT;
+    config.generator.flags =
+        GenerateFlags::all() - GenerateFlags::WITH_NAMESPACE_TRAIT - GenerateFlags::QUICK_XML;
+    config.generator.content_mode = ContentMode::Enum;
 
     if let Some(out_dir) = args
         .enable_debug_output
@@ -50,7 +60,63 @@ fn main() -> Result<(), Error> {
         config.optimizer.debug_output = Some(out_dir.join("optimizer.log"));
     }
 
-    let code = generate(config)?.to_string();
+    let schemas = exec_parser(config.parser)?;
+    let mut types = exec_interpreter(config.interpreter, &schemas)?;
+
+    for type_ in types.values_mut() {
+        match type_ {
+            Type::Enumeration(ti) => {
+                for var in &mut *ti.variants {
+                    match var.ident.name.as_str() {
+                        Some("+") => var.display_name = Some("Plus".into()),
+                        Some("-") => var.display_name = Some("Minus".into()),
+                        Some(s) if s.starts_with(char::is_numeric) => {
+                            var.display_name = Some(format!("_{s}"));
+                        }
+                        _ => (),
+                    }
+                }
+            }
+            Type::Union(ti) => {
+                for var in &mut *ti.types {
+                    match var.type_.name.as_str() {
+                        Some("+") => var.display_name = Some("Plus".into()),
+                        Some("-") => var.display_name = Some("Minus".into()),
+                        Some(s) if s.starts_with(char::is_numeric) => {
+                            var.display_name = Some(format!("_{s}"));
+                        }
+                        _ => (),
+                    }
+                }
+            }
+            _ => (),
+        }
+    }
+
+    let types_to_generate = types
+        .keys()
+        .filter(|ident| ident.name.is_named() && ident.type_ == IdentType::Element)
+        .map(|ident| {
+            let ns = ident
+                .ns
+                .as_ref()
+                .and_then(|ns| types.modules.get(ns))
+                .and_then(|module| module.name.as_ref());
+            let ident = if let Some(ns) = ns {
+                format!("{ns}:{}", ident.name)
+            } else {
+                format!("{}", ident.name)
+            };
+
+            (IdentType::Element, ident)
+        })
+        .collect::<Vec<_>>();
+    config.generator.generate = Generate::Types(types_to_generate);
+
+    let types = exec_optimizer(config.optimizer, types)?;
+    let code = exec_generator(config.generator, &schemas, &types)?;
+
+    let code = code.to_string();
 
     write(&args.output, code)?;
 
