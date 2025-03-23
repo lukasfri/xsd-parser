@@ -259,7 +259,7 @@ impl ComplexTypeBase {
         } = self;
         let xsd_parser = &ctx.xsd_parser_crate;
 
-        let body = if let Some(tag_name) = &self.element_tag() {
+        let body = if let Some(tag_name) = self.element_tag() {
             self.render_with_serializer_for_element(tag_name)
         } else {
             self.render_with_serializer_for_content()

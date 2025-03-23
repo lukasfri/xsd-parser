@@ -1118,7 +1118,9 @@ impl<'types> ComplexType<'types> {
 
 impl ComplexTypeBase {
     pub(super) fn element_tag(&self) -> Option<&String> {
-        self.is_complex.then_some(self.tag_name.as_ref()).flatten()
+        (self.is_complex && !self.is_dynamic)
+            .then_some(self.tag_name.as_ref())
+            .flatten()
     }
 
     pub(crate) fn represents_element(&self) -> bool {
